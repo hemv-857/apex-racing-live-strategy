@@ -1,0 +1,47 @@
+version: "3.8"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=file:./db/custom.db
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+    command: bun run dev
+
+  race-service:
+    build:
+      context: ./mini-services/race-service
+      dockerfile: Dockerfile
+    ports:
+      - "3003:3003"
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./mini-services/race-service:/app
+      - /app/node_modules
+    command: bun run dev
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "81:81"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+      - race-service
+
+volumes:
+  caddy_data:
+  caddy_config:

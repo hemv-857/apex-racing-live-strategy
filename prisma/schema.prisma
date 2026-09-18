@@ -1,0 +1,253 @@
+// Apex Racing — Live Race Strategy Optimization Platform
+// Prisma schema (SQLite)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---- Reference data ----
+
+model Track {
+  id            String   @id @default(cuid())
+  name          String
+  country       String
+  city          String
+  lapLengthKm   Float
+  totalLaps     Int
+  corners       Int
+  drsZones      Int
+  degradation   String   // low | medium | high
+  overtaking    String   // easy | medium | hard
+  aeroDemand    String   // low | medium | high
+  fuelSensitivity Float  // sec per 10kg
+  pitLossSec    Float    // time lost in a pit stop
+  layout        String   // JSON path data for SVG rendering
+  createdAt     DateTime @default(now())
+  sessions      RaceSession[]
+  practice      PracticeData[]
+  playbooks     Playbook[]
+}
+
+model Driver {
+  id          String   @id @default(cuid())
+  name        String
+  code        String   @unique // e.g. VER, LEC
+  number      Int
+  team        String
+  teamColor   String
+  isOurs      Boolean  @default(false) // RB drivers
+  paceRating  Float    // baseline pace multiplier
+  tireMgmt    Float    // tire management skill 0..1
+  fuelMgmt    Float    // fuel saving skill 0..1
+  driverStates DriverState[]
+  createdAt   DateTime @default(now())
+}
+
+model PracticeData {
+  id              String   @id @default(cuid())
+  trackId         String
+  track           Track    @relation(fields: [trackId], references: [id])
+  recordedAt      DateTime @default(now())
+  // Aero map: downforce level -> drag/time impact (JSON)
+  aeroMap         String
+  // Fuel consumption model: kg per lap by stint phase
+  fuelPerLapKg    Float
+  // Baseline lap time on fresh medium tire, low fuel
+  baselineLapSec  Float
+  // Tire degradation curves per compound (JSON: {soft, medium, hard})
+  tireDegradation String
+  notes           String?
+}
+
+// ---- Live race state ----
+
+model RaceSession {
+  id            String   @id @default(cuid())
+  trackId       String
+  track         Track    @relation(fields: [trackId], references: [id])
+  name          String
+  status        String   @default("scheduled") // scheduled | running | finished | red-flag
+  currentLap    Int      @default(0)
+  totalLaps     Int
+  airTempC      Float    @default(24)
+  trackTempC    Float    @default(32)
+  weather       String   @default("dry") // dry | damp | wet
+  rainProb      Float    @default(0.05)
+  windKph       Float    @default(12)
+  humidity      Float    @default(55)
+  startedAt     DateTime?
+  createdAt     DateTime @default(now())
+  driverStates  DriverState[]
+  simulations   SimulationRun[]
+  alerts        Alert[]
+  radioCalls    RadioCall[]
+  analysis      PostRaceAnalysis?
+  predictions   PredictionRun[]
+}
+
+model DriverState {
+  id            String   @id @default(cuid())
+  sessionId     String
+  session       RaceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  driverId      String
+  driver        Driver   @relation(fields: [driverId], references: [id])
+  position      Int
+  lap            Int      @default(0)
+  tireCompound  String   // soft | medium | hard | inter | wet
+  tireAgeLaps   Int      @default(0)
+  tireWearPct   Float    @default(0) // 0..100
+  fuelKg        Float
+  stintLap      Int      @default(0)
+  pitStops      Int      @default(0)
+  drsActive     Boolean  @default(false)
+  drsAvailable  Boolean  @default(false)
+  gapAheadSec   Float?
+  gapBehindSec  Float?
+  lastLapSec    Float?
+  bestLapSec    Float?
+  avgLapSec     Float?
+  paceMode      String   @default("balanced") // push | balanced | conserve
+  retired       Boolean  @default(false)
+  updatedAt     DateTime @updatedAt
+}
+
+// ---- Simulation ----
+
+model SimulationRun {
+  id            String   @id @default(cuid())
+  sessionId     String
+  session       RaceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  label         String
+  // JSON array of strategy options with probability outcomes
+  strategies    String
+  // JSON summary: win prob, podium prob, points prob per driver
+  summary       String
+  horizonLaps   Int      @default(20)
+  createdAt     DateTime @default(now())
+}
+
+model Alert {
+  id            String   @id @default(cuid())
+  sessionId     String
+  session       RaceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  severity      String   // info | warning | critical | opportunity
+  category      String   // drs | tire | weather | pit | fuel | rival
+  title         String
+  message       String
+  actionLabel   String?
+  actionPayload String?
+  acknowledged  Boolean  @default(false)
+  createdAt     DateTime @default(now())
+}
+
+model RadioCall {
+  id            String   @id @default(cuid())
+  sessionId     String
+  session       RaceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  driverCode    String
+  driverName    String
+  message       String
+  strategyRef   String?
+  status        String   @default("queued") // queued | transmitting | delivered
+  priority      String   @default("normal") // normal | urgent
+  createdAt     DateTime @default(now())
+}
+
+// ---- Post-race analysis ----
+
+model PostRaceAnalysis {
+  id            String   @id @default(cuid())
+  sessionId     String   @unique
+  session       RaceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  // JSON: per-driver actual vs predicted finishing + deltas
+  driverDeltas  String
+  // JSON: list of deviation events (safety car, yellow, tire variance)
+  deviations    String
+  accuracyScore Float    // 0..1 fraction of positions predicted within 1
+  notes         String?
+  createdAt     DateTime @default(now())
+}
+
+model Playbook {
+  id            String   @id @default(cuid())
+  trackId       String
+  track         Track    @relation(fields: [trackId], references: [id])
+  title         String
+  scenario      String   // e.g. "2-stop high-deg dry race"
+  ruleText      String
+  winRate       Float    // 0..1
+  createdAt     DateTime @default(now())
+}
+
+// ---- New: lap-by-lap telemetry history, championship standings ----
+
+model LapHistory {
+  id            String   @id @default(cuid())
+  sessionId     String
+  trackId       String   @default("suzuka")
+  driverId      String
+  lap           Int
+  position      Int
+  lapTimeSec    Float
+  compound      String
+  tireAgeLaps   Int
+  tireWearPct   Float
+  fuelKg        Float
+  pitThisLap   Boolean  @default(false)
+  paceMode      String
+  s1            Float
+  s2            Float
+  s3            Float
+  weather       String
+  recordedAt    DateTime @default(now())
+
+  @@unique([sessionId, driverId, lap])
+  @@index([trackId])
+  @@index([driverId])
+}
+
+model ChampionshipRound {
+  id            String   @id @default(cuid())
+  trackId       String
+  round         Int
+  // JSON: array of { driverId, position, points }
+  results       String
+  recordedAt    DateTime @default(now())
+
+  @@unique([trackId, round])
+}
+
+model PaceChange {
+  id            String   @id @default(cuid())
+  sessionId     String
+  driverCode    String
+  driverName    String
+  fromPace      String
+  toPace        String
+  lap           Int
+  position      Int
+  reason        String   @default("strategist")
+  timestamp     DateTime @default(now())
+
+  @@index([sessionId])
+}
+
+// ---- Pre-race predictions for accuracy tracking ----
+
+model PredictionRun {
+  id            String   @id @default(cuid())
+  sessionId     String
+  session       RaceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  // JSON: per-driver predicted position at time of prediction
+  predictions   String
+  // Which strategy option was recommended
+  recommendedOptionId String?
+  createdAt     DateTime @default(now())
+
+  @@index([sessionId])
+}

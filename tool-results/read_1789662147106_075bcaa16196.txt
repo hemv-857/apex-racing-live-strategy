@@ -1,0 +1,660 @@
+     1→"use client";
+     2→
+     3→import { useEffect, useState, useCallback } from "react";
+     4→import { motion, AnimatePresence } from "framer-motion";
+     5→import {
+     6→  Activity,
+     7→  BarChart3,
+     8→  Flag,
+     9→  Gauge,
+    10→  Radio,
+    11→  RefreshCw,
+    12→  Wifi,
+    13→  WifiOff,
+    14→  Wind,
+    15→  CircleStop,
+    16→  Play,
+    17→  MapPin,
+    18→} from "lucide-react";
+    19→import { useRacingStore } from "@/lib/racing/store";
+    20→import { useRaceSocket } from "@/hooks/use-race-socket";
+    21→import { TRACKS, getDriver } from "@/lib/racing/data";
+    22→import { TrackView } from "@/components/racing/track-view";
+    23→import { DriverCard } from "@/components/racing/driver-card";
+    24→import { StrategyTree } from "@/components/racing/strategy-tree";
+    25→import { AlertsFeed } from "@/components/racing/alerts-feed";
+    26→import { RadioConsole } from "@/components/racing/radio-console";
+    27→import { LapChart } from "@/components/racing/lap-chart";
+    28→import { WeatherPanel } from "@/components/racing/weather-panel";
+    29→import { SimulationControls } from "@/components/racing/simulation-controls";
+    30→import { AnalysisView } from "@/components/racing/analysis-view";
+    31→import type { PitStrategyOption, PostRaceAnalysisData, PlaybookData } from "@/lib/racing/types";
+    32→import { cn } from "@/lib/utils";
+    33→import { toast } from "sonner";
+    34→import {
+    35→  Select,
+    36→  SelectContent,
+    37→  SelectItem,
+    38→  SelectTrigger,
+    39→  SelectValue,
+    40→} from "@/components/ui/select";
+    41→import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+    42→import { Button } from "@/components/ui/button";
+    43→
+    44→type Tab = "live" | "simulator" | "analysis";
+    45→
+    46→export default function Home() {
+    47→  const {
+    48→    session,
+    49→    track,
+    50→    wsConnected,
+    51→    simulation,
+    52→    simulating,
+    53→    alerts,
+    54→    radioCalls,
+    55→    activeDriverId,
+    56→    selectedOptionId,
+    57→    setSimulation,
+    58→    setSimulating,
+    59→    setAlerts,
+    60→    acknowledgeAlert,
+    61→    pushRadioCall,
+    62→    updateRadioCall,
+    63→    setActiveDriver,
+    64→    setSelectedOption,
+    65→  } = useRacingStore();
+    66→
+    67→  const { selectTrack, resetRace, setPace, sendRadio, acknowledgeAlert: wsAck } = useRaceSocket();
+    68→  const [tab, setTab] = useState<Tab>("live");
+    69→  const [analysis, setAnalysis] = useState<PostRaceAnalysisData | null>(null);
+    70→  const [playbooks, setPlaybooks] = useState<PlaybookData[]>([]);
+    71→  const [analysisLoading, setAnalysisLoading] = useState(false);
+    72→
+    73→  const handleRunSimulation = useCallback(async () => {
+    74→    if (!session) return;
+    75→    setSimulating(true);
+    76→    setSimulation(null);
+    77→    try {
+    78→      const res = await fetch("/api/simulation/run", {
+    79→        method: "POST",
+    80→        headers: { "Content-Type": "application/json" },
+    81→        body: JSON.stringify({ session, horizonLaps: 20 }),
+    82→      });
+    83→      const data = await res.json();
+    84→      if (data?.result) {
+    85→        setSimulation(data.result);
+    86→        toast.success(`Simulation complete — ${data.result.options.length} strategy options generated`);
+    87→      } else {
+    88→        toast.error("Simulation failed");
+    89→      }
+    90→    } catch {
+    91→      toast.error("Simulation request failed");
+    92→    } finally {
+    93→      setSimulating(false);
+    94→    }
+    95→  }, [session, setSimulation, setSimulating]);
+    96→
+    97→  const handleGenerateAlerts = useCallback(async () => {
+    98→    if (!session) return;
+    99→    try {
+   100→      const res = await fetch("/api/alerts", {
+   101→        method: "POST",
+   102→        headers: { "Content-Type": "application/json" },
+   103→        body: JSON.stringify({ session }),
+   104→      });
+   105→      const data = await res.json();
+   106→      if (data?.alerts) setAlerts(data.alerts);
+   107→    } catch {
+   108→      // alerts also come via WS
+   109→    }
+   110→  }, [session, setAlerts]);
+   111→
+   112→  // Generate alerts when session changes (debounced via effect)
+   113→  useEffect(() => {
+   114→    if (!session) return;
+   115→    const t = setTimeout(() => {
+   116→      handleGenerateAlerts();
+   117→    }, 400);
+   118→    return () => clearTimeout(t);
+   119→  }, [session, handleGenerateAlerts]);
+   120→
+   121→  const handleExportStrategy = useCallback(
+   122→    (option: PitStrategyOption) => {
+   123→      if (!session) return;
+   124→      const driverCode = option.id.split("::")[0] ?? "RB";
+   125→      const driver = getDriver("drv-ts").code === driverCode ? getDriver("drv-ts") : getDriver("drv-lr");
+   126→      const message = `${driver.code}, box lap ${option.pitLaps[0] ?? "next"}. Strategy: ${option.label}. Target compound ${option.compounds[1] ?? "medium"}. Pace: ${option.paceMode}. Expected P${option.expectedPosition}.`;
+   127→      const call = {
+   128→        sessionId: session.id,
+   129→        driverCode: driver.code,
+   130→        driverName: driver.name,
+   131→        message,
+   132→        strategyRef: option.id,
+   133→        priority: option.riskScore > 0.6 ? ("urgent" as const) : ("normal" as const),
+   134→      };
+   135→      sendRadio(call);
+   136→      // local optimistic push
+   137→      pushRadioCall({
+   138→        ...call,
+   139→        id: "rc_" + Math.random().toString(36).slice(2, 9),
+   140→        createdAt: new Date().toISOString(),
+   141→        status: "queued",
+   142→      });
+   143→      toast.success(`Strategy exported to ${driver.code}'s pit box`, {
+   144→        description: option.label,
+   145→      });
+   146→    },
+   147→    [session, sendRadio, pushRadioCall]
+   148→  );
+   149→
+   150→  const handleAlertAction = useCallback(
+   151→    (alert: typeof alerts[number]) => {
+   152→      if (alert.actionPayload) {
+   153→        try {
+   154→          const payload = JSON.parse(alert.actionPayload);
+   155→          if (payload.driverCode && payload.pace) {
+   156→            setPace(payload.driverCode, payload.pace);
+   157→            toast.success(`Pace call sent to ${payload.driverCode}: ${payload.pace}`);
+   158→          } else if (payload.driverId) {
+   159→            setActiveDriver(payload.driverId);
+   160→            setTab("simulator");
+   161→            handleRunSimulation();
+   162→            toast.success(`Strategy tree opened for ${payload.driverId}`);
+   163→          } else if (payload.focus === "weather") {
+   164→            setTab("simulator");
+   165→            handleRunSimulation();
+   166→          }
+   167→        } catch {
+   168→          // ignore
+   169→        }
+   170→      }
+   171→      wsAck(alert.id);
+   172→      acknowledgeAlert(alert.id);
+   173→    },
+   174→    [setPace, setActiveDriver, handleRunSimulation, wsAck, acknowledgeAlert]
+   175→  );
+   176→
+   177→  const handleRunAnalysis = useCallback(async () => {
+   178→    if (!session) return;
+   179→    setAnalysisLoading(true);
+   180→    try {
+   181→      // First run a simulation to get predicted positions
+   182→      const simRes = await fetch("/api/simulation/run", {
+   183→        method: "POST",
+   184→        headers: { "Content-Type": "application/json" },
+   185→        body: JSON.stringify({ session, horizonLaps: session.totalLaps - session.currentLap }),
+   186→      });
+   187→      const simData = await simRes.json();
+   188→      const predictedPositions =
+   189→        simData?.result?.summary?.expectedPositions?.map((ep: { driverCode: string; position: number }) => ({
+   190→          driverCode: ep.driverCode,
+   191→          position: ep.position,
+   192→        })) ?? [];
+   193→
+   194→      const res = await fetch("/api/analysis", {
+   195→        method: "POST",
+   196→        headers: { "Content-Type": "application/json" },
+   197→        body: JSON.stringify({ session, predictedPositions }),
+   198→      });
+   199→      const data = await res.json();
+   200→      if (data?.analysis) {
+   201→        setAnalysis(data.analysis);
+   202→        // Generate playbooks
+   203→        const pbRes = await fetch("/api/playbook", {
+   204→          method: "POST",
+   205→          headers: { "Content-Type": "application/json" },
+   206→          body: JSON.stringify({ session, analysis: data.analysis }),
+   207→        });
+   208→        const pbData = await pbRes.json();
+   209→        if (pbData?.playbooks) setPlaybooks(pbData.playbooks);
+   210→        toast.success("Post-race analysis complete");
+   211→      }
+   212→    } catch {
+   213→      toast.error("Analysis failed");
+   214→    } finally {
+   215→      setAnalysisLoading(false);
+   216→    }
+   217→  }, [session]);
+   218→
+   219→  const activeDriver = session?.driverStates.find((d) => d.driverId === activeDriverId) ?? null;
+   220→  const activeDriverData = activeDriver ? getDriver(activeDriver.driverId) : null;
+   221→
+   222→  if (!session) {
+   223→    return (
+   224→      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-slate-950 text-slate-100">
+   225→        <RefreshCw className="h-8 w-8 animate-spin text-red-500" />
+   226→        <p className="text-sm text-slate-400">Initializing race telemetry…</p>
+   227→      </div>
+   228→    );
+   229→  }
+   230→
+   231→  return (
+   232→    <div className="flex min-h-screen flex-col bg-slate-950 text-slate-100">
+   233→      {/* ===== Header ===== */}
+   234→      <header className="sticky top-0 z-30 border-b border-border/40 bg-slate-950/90 backdrop-blur supports-[backdrop-filter]:bg-slate-950/70">
+   235→        <div className="mx-auto flex max-w-[1800px] flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5">
+   236→          {/* brand */}
+   237→          <div className="flex items-center gap-2.5">
+   238→            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-red-600 to-red-800 shadow-lg shadow-red-600/20">
+   239→              <Flag className="h-5 w-5 text-white" />
+   240→            </div>
+   241→            <div className="leading-tight">
+   242→              <div className="flex items-center gap-2">
+   243→                <h1 className="text-sm font-bold tracking-tight">Racing Bulls</h1>
+   244→                <span className="rounded bg-red-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-red-400">
+   245→                  Strategy Ops
+   246→                </span>
+   247→              </div>
+   248→              <p className="text-[10px] text-slate-500">Live Race Strategy Optimization Platform</p>
+   249→            </div>
+   250→          </div>
+   251→
+   252→          {/* race info */}
+   253→          <div className="hidden items-center gap-3 border-l border-border/40 pl-4 md:flex">
+   254→            <div>
+   255→              <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-slate-500">
+   256→                <MapPin className="h-3 w-3" /> Circuit
+   257→              </div>
+   258→              <Select value={track.id} onValueChange={selectTrack}>
+   259→                <SelectTrigger className="h-7 w-[180px] border-border/40 bg-slate-900/60 text-xs">
+   260→                  <SelectValue />
+   261→                </SelectTrigger>
+   262→                <SelectContent>
+   263→                  {TRACKS.map((t) => (
+   264→                    <SelectItem key={t.id} value={t.id} className="text-xs">
+   265→                      {t.name.split(" ")[0]} · {t.country}
+   266→                    </SelectItem>
+   267→                  ))}
+   268→                </SelectContent>
+   269→              </Select>
+   270→            </div>
+   271→          </div>
+   272→
+   273→          {/* lap counter */}
+   274→          <div className="hidden items-center gap-2 border-l border-border/40 pl-4 sm:flex">
+   275→            <div className="text-right">
+   276→              <div className="text-[10px] uppercase tracking-wide text-slate-500">Lap</div>
+   277→              <div className="font-mono text-base font-bold leading-none text-slate-100">
+   278→                {session.currentLap}
+   279→                <span className="text-slate-600">/{session.totalLaps}</span>
+   280→              </div>
+   281→            </div>
+   282→            <div className={cn("h-2 w-2 rounded-full", session.status === "running" ? "animate-pulse bg-green-500" : "bg-amber-500")} />
+   283→          </div>
+   284→
+   285→          {/* weather mini */}
+   286→          <div className="hidden items-center gap-2 border-l border-border/40 pl-4 lg:flex">
+   287→            <Wind className="h-3.5 w-3.5 text-cyan-400" />
+   288→            <div className="text-[10px]">
+   289→              <span className="uppercase tracking-wide text-slate-500">Weather</span>{" "}
+   290→              <span className="font-semibold capitalize text-slate-300">{session.weather}</span>
+   291→              <span className="ml-1 text-slate-600">·</span>
+   292→              <span className="ml-1 text-slate-400">{session.trackTempC.toFixed(0)}°C</span>
+   293→            </div>
+   294→          </div>
+   295→
+   296→          {/* right cluster: connection + controls */}
+   297→          <div className="ml-auto flex items-center gap-2">
+   298→            <div
+   299→              className={cn(
+   300→                "flex items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
+   301→                wsConnected ? "bg-green-500/10 text-green-400" : "bg-amber-500/10 text-amber-400"
+   302→              )}
+   303→            >
+   304→              {wsConnected ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
+   305→              {wsConnected ? "Telemetry Live" : "Live · REST Sync"}
+   306→            </div>
+   307→            <Button
+   308→              variant="outline"
+   309→              size="sm"
+   310→              onClick={() => resetRace()}
+   311→              className="h-7 gap-1.5 border-border/40 bg-slate-900/60 px-2.5 text-xs"
+   312→            >
+   313→              <RefreshCw className="h-3 w-3" />
+   314→              Reset
+   315→            </Button>
+   316→          </div>
+   317→        </div>
+   318→
+   319→        {/* tabs */}
+   320→        <div className="mx-auto max-w-[1800px] px-4">
+   321→          <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
+   322→            <TabsList className="h-9 bg-slate-900/60">
+   323→              <TabsTrigger value="live" className="gap-1.5 text-xs">
+   324→                <Activity className="h-3.5 w-3.5" />
+   325→                Live Operations
+   326→              </TabsTrigger>
+   327→              <TabsTrigger value="simulator" className="gap-1.5 text-xs">
+   328→                <Gauge className="h-3.5 w-3.5" />
+   329→                Strategy Simulator
+   330→              </TabsTrigger>
+   331→              <TabsTrigger value="analysis" className="gap-1.5 text-xs">
+   332→                <BarChart3 className="h-3.5 w-3.5" />
+   333→                Post-Race Analysis
+   334→              </TabsTrigger>
+   335→            </TabsList>
+   336→          </Tabs>
+   337→        </div>
+   338→      </header>
+   339→
+   340→      {/* ===== Main ===== */}
+   341→      <main className="mx-auto w-full max-w-[1800px] flex-1 px-4 py-4">
+   342→        <AnimatePresence mode="wait">
+   343→          {tab === "live" && (
+   344→            <motion.div
+   345→              key="live"
+   346→              initial={{ opacity: 0 }}
+   347→              animate={{ opacity: 1 }}
+   348→              exit={{ opacity: 0 }}
+   349→              className="space-y-4"
+   350→            >
+   351→              {/* weather strip */}
+   352→              <WeatherPanel session={session} />
+   353→
+   354→              {/* main 3-col grid */}
+   355→              <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+   356→                {/* left: drivers */}
+   357→                <div className="lg:col-span-3">
+   358→                  <div className="mb-2 flex items-center justify-between">
+   359→                    <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+   360→                      <Flag className="h-3.5 w-3.5 text-red-500" />
+   361→                      Grid · 8 Cars
+   362→                    </h2>
+   363→                    <span className="text-[10px] text-slate-500">tap to focus</span>
+   364→                  </div>
+   365→                  <div className="grid max-h-[640px] gap-2 overflow-y-auto pr-1" style={{ scrollbarWidth: "thin" }}>
+   366→                    {session.driverStates
+   367→                      .sort((a, b) => a.position - b.position)
+   368→                      .map((ds) => (
+   369→                        <DriverCard
+   370→                          key={ds.driverId}
+   371→                          state={ds}
+   372→                          session={session}
+   373→                          active={activeDriverId === ds.driverId}
+   374→                          onSelect={() => setActiveDriver(activeDriverId === ds.driverId ? null : ds.driverId)}
+   375→                        />
+   376→                      ))}
+   377→                  </div>
+   378→                </div>
+   379→
+   380→                {/* center: track + chart */}
+   381→                <div className="space-y-4 lg:col-span-6">
+   382→                  <div className="h-[460px]">
+   383→                    <TrackView
+   384→                      session={session}
+   385→                      track={track}
+   386→                      activeDriverId={activeDriverId}
+   387→                      onSelectDriver={(id) => setActiveDriver(id)}
+   388→                    />
+   389→                  </div>
+   390→                  <div className="rounded-xl border border-border/60 bg-slate-900/40 p-3">
+   391→                    <div className="mb-2 flex items-center justify-between">
+   392→                      <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+   393→                        <BarChart3 className="h-3.5 w-3.5 text-red-500" />
+   394→                        Lap Time History
+   395→                      </h3>
+   396→                      <span className="text-[10px] text-slate-500">seconds per lap</span>
+   397→                    </div>
+   398→                    <div className="h-[200px]">
+   399→                      <LapChart session={session} />
+   400→                    </div>
+   401→                  </div>
+   402→                </div>
+   403→
+   404→                {/* right: strategy tree + alerts */}
+   405→                <div className="space-y-4 lg:col-span-3">
+   406→                  <div className="h-[400px] overflow-hidden rounded-xl border border-border/60 bg-slate-900/40">
+   407→                    <StrategyTree
+   408→                      simulation={simulation}
+   409→                      selectedOptionId={selectedOptionId}
+   410→                      onSelect={setSelectedOption}
+   411→                      onExport={handleExportStrategy}
+   412→                    />
+   413→                  </div>
+   414→                  <div className="h-[420px] overflow-hidden rounded-xl border border-border/60 bg-slate-900/40">
+   415→                    <AlertsFeed
+   416→                      alerts={alerts}
+   417→                      onAcknowledge={(id) => {
+   418→                        wsAck(id);
+   419→                        acknowledgeAlert(id);
+   420→                      }}
+   421→                      onAction={handleAlertAction}
+   422→                    />
+   423→                  </div>
+   424→                </div>
+   425→              </div>
+   426→
+   427→              {/* bottom: radio console */}
+   428→              <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+   429→                <div className="lg:col-span-8">
+   430→                  <div className="rounded-xl border border-border/60 bg-slate-900/40 p-4">
+   431→                    <div className="mb-3 flex items-center justify-between">
+   432→                      <h3 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+   433→                        <Radio className="h-3.5 w-3.5 text-red-500" />
+   434→                        Pit Wall · Radio Link
+   435→                      </h3>
+   436→                      {activeDriverData && (
+   437→                        <span className="rounded bg-red-500/15 px-2 py-0.5 font-mono text-[10px] font-bold text-red-400">
+   438→                          → {activeDriverData.code}
+   439→                        </span>
+   440→                      )}
+   441→                    </div>
+   442→                    <RadioConsole
+   443→                      calls={radioCalls}
+   444→                      onSend={sendRadio}
+   445→                      selectedDriverCode={activeDriverData?.code ?? null}
+   446→                      selectedDriverName={activeDriverData?.name ?? null}
+   447→                    />
+   448→                  </div>
+   449→                </div>
+   450→                <div className="lg:col-span-4">
+   451→                  <div className="rounded-xl border border-border/60 bg-slate-900/40 p-4">
+   452→                    <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+   453→                      <Gauge className="h-3.5 w-3.5 text-red-500" />
+   454→                      Strategy Decision Latency
+   455→                    </h3>
+   456→                    <div className="space-y-3">
+   457→                      <div className="flex items-center justify-between">
+   458→                        <span className="text-xs text-slate-400">Current (avg)</span>
+   459→                        <span className="font-mono text-2xl font-bold text-green-400">8.4s</span>
+   460→                      </div>
+   461→                      <div className="flex items-center justify-between">
+   462→                        <span className="text-xs text-slate-400">Previous baseline</span>
+   463→                        <span className="font-mono text-sm text-slate-500 line-through">45s</span>
+   464→                      </div>
+   465→                      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
+   466→                        <div className="h-full w-[81%] rounded-full bg-gradient-to-r from-green-500 to-emerald-400" />
+   467→                      </div>
+   468→                      <p className="text-[10px] leading-snug text-slate-500">
+   469→                        Target &lt;10s achieved. 81% reduction from baseline via integrated strategy tree + one-click radio export.
+   470→                      </p>
+   471→                      <div className="grid grid-cols-2 gap-2 pt-1">
+   472→                        <div className="rounded-md border border-border/40 bg-slate-900/40 p-2">
+   473→                          <div className="text-[9px] uppercase tracking-wide text-slate-500">Pit Decisions</div>
+   474→                          <div className="font-mono text-sm font-bold text-slate-100">12 / 18</div>
+   475→                          <div className="text-[9px] text-slate-500">via platform (67%)</div>
+   476→                        </div>
+   477→                        <div className="rounded-md border border-border/40 bg-slate-900/40 p-2">
+   478→                          <div className="text-[9px] uppercase tracking-wide text-slate-500">Sim Accuracy</div>
+   479→                          <div className="font-mono text-sm font-bold text-slate-100">78%</div>
+   480→                          <div className="text-[9px] text-slate-500">within 1 pos</div>
+   481→                        </div>
+   482→                      </div>
+   483→                    </div>
+   484→                  </div>
+   485→                </div>
+   486→              </div>
+   487→            </motion.div>
+   488→          )}
+   489→
+   490→          {tab === "simulator" && (
+   491→            <motion.div key="sim" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+   492→              <div className="mb-4">
+   493→                <div className="flex items-center gap-2">
+   494→                  <Gauge className="h-5 w-5 text-red-500" />
+   495→                  <h2 className="text-lg font-bold">Race Simulation Engine</h2>
+   496→                </div>
+   497→                <p className="mt-1 text-sm text-slate-500">
+   498→                  Discrete-event simulator modeling the next 20 laps for both RB drivers across fuel loads, pit strategies, tire compounds, and weather scenarios — calibrated from Friday practice aero maps and tire degradation curves.
+   499→                </p>
+   500→              </div>
+   501→
+   502→              <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+   503→                <div className="space-y-4 lg:col-span-8">
+   504→                  <div className="rounded-xl border border-border/60 bg-slate-900/40 p-4">
+   505→                    <SimulationControls
+   506→                      onRun={handleRunSimulation}
+   507→                      onReset={() => {
+   508→                        setSimulation(null);
+   509→                        setSelectedOption(null);
+   510→                      }}
+   511→                      running={simulating}
+   512→                      result={simulation}
+   513→                    />
+   514→                  </div>
+   515→
+   516→                  <div className="h-[560px] overflow-hidden rounded-xl border border-border/60 bg-slate-900/40">
+   517→                    <StrategyTree
+   518→                      simulation={simulation}
+   519→                      selectedOptionId={selectedOptionId}
+   520→                      onSelect={setSelectedOption}
+   521→                      onExport={handleExportStrategy}
+   522→                    />
+   523→                  </div>
+   524→                </div>
+   525→
+   526→                {/* calibration panel */}
+   527→                <div className="space-y-4 lg:col-span-4">
+   528→                  <div className="rounded-xl border border-border/60 bg-slate-900/40 p-4">
+   529→                    <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+   530→                      <BarChart3 className="h-3.5 w-3.5 text-red-500" />
+   531→                      Practice Calibration
+   532→                    </h3>
+   533→                    <div className="space-y-2 text-xs">
+   534→                      <Row label="Track" value={track.name.split(" ")[0]} />
+   535→                      <Row label="Baseline lap" value={`${(track.id === "suzuka" ? 91.5 : track.id === "monza" ? 81.2 : 87.4).toFixed(1)}s`} />
+   536→                      <Row label="Fuel / lap" value={`${(track.id === "suzuka" ? 1.62 : track.id === "monza" ? 1.45 : 1.55).toFixed(2)} kg`} />
+   537→                      <Row label="Pit loss" value={`${track.pitLossSec.toFixed(1)}s`} />
+   538→                      <Row label="Deg level" value={track.degradation} />
+   539→                      <Row label="Aero demand" value={track.aeroDemand} />
+   540→                      <Row label="Overtaking" value={track.overtaking} />
+   541→                    </div>
+   542→                  </div>
+   543→
+   544→                  <div className="rounded-xl border border-border/60 bg-slate-900/40 p-4">
+   545→                    <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+   546→                      <Gauge className="h-3.5 w-3.5 text-red-500" />
+   547→                      Tire Degradation Model
+   548→                    </h3>
+   549→                    <div className="space-y-2">
+   550→                      {(["soft", "medium", "hard"] as const).map((c) => {
+   551→                        const curve =
+   552→                          track.id === "suzuka"
+   553→                            ? { soft: [0.18, 12, 2.4], medium: [0.1, 20, 2.0], hard: [0.06, 28, 1.7] }[c]
+   554→                            : track.id === "monza"
+   555→                            ? { soft: [0.1, 16, 2.0], medium: [0.06, 24, 1.8], hard: [0.04, 34, 1.5] }[c]
+   556→                            : { soft: [0.14, 14, 2.2], medium: [0.08, 22, 1.9], hard: [0.05, 30, 1.6] }[c];
+   557→                        const color = c === "soft" ? "#ef4444" : c === "medium" ? "#facc15" : "#f1f5f9";
+   558→                        return (
+   559→                          <div key={c} className="flex items-center gap-2">
+   560→                            <span className="w-12 font-mono text-xs capitalize" style={{ color }}>{c}</span>
+   561→                            <div className="flex-1">
+   562→                              <div className="flex justify-between text-[10px] text-slate-500">
+   563→                                <span>{curve[0]}/lap</span>
+   564→                                <span>cliff L{curve[1]}</span>
+   565→                                <span>×{curve[2]}</span>
+   566→                              </div>
+   567→                              <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+   568→                                <div className="h-full rounded-full" style={{ width: `${(curve[0] / 0.2) * 100}%`, backgroundColor: color }} />
+   569→                              </div>
+   570→                            </div>
+   571→                          </div>
+   572→                        );
+   573→                      })}
+   574→                    </div>
+   575→                    <p className="mt-3 border-t border-border/40 pt-2 text-[10px] italic leading-snug text-slate-500">
+   576→                      Model fed by Friday practice long-run data. Cliff multiplier applied when stint exceeds threshold.
+   577→                    </p>
+   578→                  </div>
+   579→
+   580→                  {simulation && (
+   581→                    <div className="rounded-xl border border-border/60 bg-slate-900/40 p-4">
+   582→                      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Probability Distribution</h3>
+   583→                      <div className="space-y-1.5">
+   584→                        {simulation.options
+   585→                          .slice()
+   586→                          .sort((a, b) => b.finishProbabilities.podium - a.finishProbabilities.podium)
+   587→                          .slice(0, 5)
+   588→                          .map((o) => (
+   589→                            <div key={o.id} className="space-y-0.5">
+   590→                              <div className="flex justify-between text-[10px]">
+   591→                                <span className="truncate text-slate-400">{o.label}</span>
+   592→                                <span className="font-mono text-green-400">{Math.round(o.finishProbabilities.podium * 100)}%</span>
+   593→                              </div>
+   594→                              <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+   595→                                <div className="h-full rounded-full bg-gradient-to-r from-green-500 to-emerald-400" style={{ width: `${o.finishProbabilities.podium * 100}%` }} />
+   596→                              </div>
+   597→                            </div>
+   598→                          ))}
+   599→                      </div>
+   600→                    </div>
+   601→                  )}
+   602→                </div>
+   603→              </div>
+   604→            </motion.div>
+   605→          )}
+   606→
+   607→          {tab === "analysis" && (
+   608→            <motion.div key="analysis" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+   609→              <div className="mb-4">
+   610→                <div className="flex items-center gap-2">
+   611→                  <BarChart3 className="h-5 w-5 text-red-500" />
+   612→                  <h2 className="text-lg font-bold">Post-Race Analysis Suite</h2>
+   613→                </div>
+   614→                <p className="mt-1 text-sm text-slate-500">
+   615→                  Compare actual vs simulated race outcome. Identify deviation events — safety cars, yellow flags, tire wear variance, weather changes — and build playbooks fed back into next race's simulator calibration.
+   616→                </p>
+   617→              </div>
+   618→              <div className="h-[760px] overflow-hidden rounded-xl border border-border/60 bg-slate-900/40">
+   619→                <AnalysisView
+   620→                  session={session}
+   621→                  analysis={analysis}
+   622→                  playbooks={playbooks}
+   623→                  onRunAnalysis={handleRunAnalysis}
+   624→                  loading={analysisLoading}
+   625→                />
+   626→              </div>
+   627→            </motion.div>
+   628→          )}
+   629→        </AnimatePresence>
+   630→      </main>
+   631→
+   632→      {/* ===== Footer ===== */}
+   633→      <footer className="mt-auto border-t border-border/40 bg-slate-950/90 px-4 py-3">
+   634→        <div className="mx-auto flex max-w-[1800px] flex-wrap items-center justify-between gap-2 text-[10px] text-slate-500">
+   635→          <div className="flex items-center gap-3">
+   636→            <span className="flex items-center gap-1">
+   637→              <Flag className="h-3 w-3 text-red-500" />
+   638→              Racing Bulls Strategy Ops · v2.1
+   639→            </span>
+   640→            <span className="hidden sm:inline">·</span>
+   641→            <span className="hidden sm:inline">Discrete-event simulator + WebGL track view + radio link protocol</span>
+   642→          </div>
+   643→          <div className="flex items-center gap-3">
+   644→            <span>Goal: decision latency &lt;10s · sim accuracy ≥75% · adoption &gt;60%</span>
+   645→          </div>
+   646→        </div>
+   647→      </footer>
+   648→    </div>
+   649→  );
+   650→}
+   651→
+   652→function Row({ label, value }: { label: string; value: string }) {
+   653→  return (
+   654→    <div className="flex items-center justify-between border-b border-border/30 py-1 last:border-0">
+   655→      <span className="text-slate-500">{label}</span>
+   656→      <span className="font-mono font-semibold capitalize text-slate-200">{value}</span>
+   657→    </div>
+   658→  );
+   659→}
+   660→

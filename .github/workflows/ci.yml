@@ -42,6 +42,12 @@ jobs:
         run: bunx prisma generate
       - name: Build application
         run: bun run build
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextjs-standalone
+          path: .next/standalone/
+          retention-days: 7
 
   test:
     name: Tests
@@ -67,16 +73,15 @@ jobs:
     needs: [build, test]
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      - name: Build standalone
-        run: bun run build
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
         with:
           name: nextjs-standalone
+          path: .next/standalone/
+      - name: Upload build artifact for preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextjs-standalone-preview
           path: .next/standalone/
           retention-days: 7
 
@@ -87,12 +92,11 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: production
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
         with:
-          bun-version: latest
-      - name: Build standalone
-        run: bun run build
+          name: nextjs-standalone
+          path: .next/standalone/
       - name: Deploy to production
         run: |
           echo "Deploy to your hosting platform here"

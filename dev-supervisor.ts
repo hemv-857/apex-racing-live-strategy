@@ -7,7 +7,7 @@ function start() {
     process.execPath, // bun
     ["next", "dev", "-p", "3000"],
     {
-      cwd: "/home/z/my-project",
+      cwd: process.cwd(),
       stdio: "inherit",
       env: { ...process.env, FORCE_COLOR: "1" },
     }

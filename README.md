@@ -1,73 +1,75 @@
 # Apex Racing — Live Race Strategy Optimization Platform
 
-Real-time F1 race strategy command center with discrete-event simulation, live track visualization, strategy comparison, and one-click pit radio integration.
+![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
+![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4-06B6D4?logo=tailwindcss&logoColor=white)
+![Prisma](https://img.shields.io/badge/Prisma-6-2D3748?logo=prisma&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+> Real-time F1 race strategy command center with discrete-event simulation, live track visualization, strategy comparison, and one-click pit radio integration.
+
+---
 
 ## Features
 
 - **Live Operations** — Real-time race state with driver cards, sector times, weather, and DRS/alert overlays
 - **Strategy Simulator** — Discrete-event simulator generating multi-stop strategy options with win/podium/top5 probabilities
 - **Post-Race Analysis** — Actual vs predicted comparison with deviation events and auto-generated playbooks
-- **Championship** — Multi-round standings, timeline with round filter, head-to-head sector radar + delta bars
+- **Championship** — Multi-round standings, timeline, head-to-head sector radar + delta bars
 - **What-If Builder** — Custom pit laps, compounds, pace modes with live delta-to-baseline
 - **Pace Impact** — Rolling delta-from-baseline line, background pace-mode shading, change log
 - **Radio Console** — One-click strategy export to pit box with queued/transmitting/delivered status
 - **Data Export** — CSV/JSON export with session/lap/driver filters
 
-## Architecture
+---
 
-```
-src/
-├── app/                    # Next.js 16 App Router (API routes + page)
-├── components/
-│   ├── racing/             # Domain components (track-view, driver-card, charts, etc.)
-│   └── ui/                 # shadcn/ui primitives
-├── hooks/                  # React hooks (race socket, mobile, toast)
-├── lib/
-│   ├── racing/
-│   │   ├── data.ts         # Static driver/track/calibration data
-│   │   ├── types.ts        # Shared TypeScript types
-│   │   ├── simulation-engine.ts  # Core discrete-event simulator
-│   │   ├── race-state.ts   # In-process race ticker + REST helpers
-│   │   ├── history.ts      # Lap history, championship, pace log
-│   │   ├── analysis.ts     # Post-race accuracy + playbooks
-│   │   └── store.ts        # Zustand global state
-│   ├── db.ts               # Prisma client
-│   └── utils.ts
-├── prisma/
-│   └── schema.prisma       # SQLite models (sessions, laps, predictions, etc.)
-└── mini-services/race-service/  # Independent WebSocket server (port 3003)
-```
+## Tech Stack
 
-## Quick Start
+| Layer | Technology |
+|-------|-----------|
+| Framework | Next.js 16 (App Router) |
+| Language | TypeScript 5 (strict mode) |
+| Styling | Tailwind CSS 4, shadcn/ui |
+| Database | Prisma + SQLite |
+| Charts | Recharts |
+| State | Zustand |
+| Real-time | WebSocket (port 3003) |
+| Animation | Framer Motion |
+
+---
+
+## Getting Started
+
+### Prerequisites
+- [Bun](https://bun.sh) >= 1.2 or Node.js >= 20
+
+### Setup
 
 ```bash
-# 1. Install dependencies
-npm install
+git clone https://github.com/hemv-857/apex-racing-live-strategy.git
+cd apex-racing-live-strategy
 
-# 2. Generate Prisma client & push schema
-npx prisma generate
-npx prisma db push
+bun install
+bunx prisma generate
+bunx prisma db push
+bunx tsx scripts/seed.ts
 
-# 3. Start dev server (port 3000)
-npm run dev
-
-# 4. In another terminal, start WebSocket mini-service (port 3003)
-cd mini-services/race-service && bun run dev
+bun run dev
 ```
 
-Caddy reverse proxy (optional, port 81) routes `?XTransformPort=3003` to the WS service:
-```bash
-caddy run --config Caddyfile
-```
+Open **http://localhost:3000**.
 
-## Environment
+### Environment Variables
 
-Create `.env`:
-```
+Copy `.env.example` to `.env`:
+
+```env
 DATABASE_URL=file:./db/custom.db
 ```
 
-## Key API Routes
+---
+
+## API Routes
 
 | Route | Method | Description |
 |-------|--------|-------------|
@@ -86,9 +88,11 @@ DATABASE_URL=file:./db/custom.db
 | `/api/timeline` | GET | Points progression timeline |
 | `/api/head-to-head` | GET | Sector-by-sector comparison |
 
+---
+
 ## Simulation Engine
 
-Deterministic discrete-event simulator calibrated from practice data (aero maps + tire degradation curves). Core functions:
+Deterministic discrete-event simulator calibrated from practice data:
 
 - `simulateStrategy()` — Full race trace for a pit plan
 - `simulateRaceOutcomes()` — All generated plans vs rival reference
@@ -96,38 +100,16 @@ Deterministic discrete-event simulator calibrated from practice data (aero maps 
 - `buildStrategyComparison()` — Multi-trace overlay data
 - `computeFinishProbabilities()` — Monte Carlo sampling over normal distributions
 
-Probabilities are derived by sampling 3000 draws from `N(ourMean, variance²)` and rival means; `variance = 1.5 + riskScore × 2.5`.
+Probabilities derived by sampling 3000 draws from `N(ourMean, variance²)`.
+
+---
 
 ## Database
 
-SQLite via Prisma. Models:
-- `RaceSession`, `DriverState` — Live state
-- `LapHistory` — Per-lap telemetry with S1/S2/S3
-- `ChampionshipRound` — Round results (JSON)
-- `PaceChange` — Pace-mode log
-- `PredictionRun` — Pre-race predictions for accuracy tracking
-- `SimulationRun`, `Alert`, `RadioCall`, `PostRaceAnalysis`, `Playbook`
+SQLite via Prisma. Models: `RaceSession`, `DriverState`, `LapHistory`, `ChampionshipRound`, `PaceChange`, `PredictionRun`, `SimulationRun`, `Alert`, `RadioCall`, `PostRaceAnalysis`, `Playbook`.
 
-## Docker
-
-```bash
-docker-compose up --build
-# App:     http://localhost:3000
-# WS:      ws://localhost:3003
-# Caddy:   http://localhost:81
-```
-
-Production image builds standalone Next.js output (`Dockerfile` multi-stage).
-
-## CI/CD
-
-GitHub Actions workflow (`.github/workflows/ci.yml`):
-1. **lint-and-typecheck** — ESLint + `tsc --noEmit`
-2. **build** — `npm run build`
-3. **test** — DB runtime build test script
-4. **deploy-preview** — Upload standalone artifact on PR
-5. **deploy-production** — Deploy on push to `main` (add secrets)
+---
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

@@ -39,6 +39,9 @@
   "exclude": [
     "node_modules",
     "mini-services",
-    "examples"
+    "examples",
+    "src/components/ui/calendar.tsx",
+    "src/components/ui/carousel.tsx",
+    "src/components/ui/form.tsx"
   ]
 }

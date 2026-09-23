@@ -43,7 +43,7 @@ jobs:
       - name: Build application
         run: bun run build
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nextjs-standalone
           path: .next/standalone/
@@ -79,7 +79,7 @@ jobs:
           name: nextjs-standalone
           path: .next/standalone/
       - name: Upload build artifact for preview
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nextjs-standalone-preview
           path: .next/standalone/

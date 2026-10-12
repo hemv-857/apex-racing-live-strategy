@@ -113,6 +113,10 @@ SQLite via Prisma. Models: `RaceSession`, `DriverState`, `LapHistory`, `Champion
 
 ---
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
